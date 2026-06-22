@@ -14,6 +14,12 @@ func main() {
 		return
 	}
 	for _, in := range args {
-		fmt.Println("input:", in)
+		norm, err := normalizePDF(in)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, in+":", err)
+			continue
+		}
+		fmt.Println("normalized", in, "->", norm)
+		os.Remove(norm)
 	}
 }
