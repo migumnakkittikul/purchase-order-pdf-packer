@@ -2,7 +2,10 @@ module github.com/migumnakkittikul/purchase-order-pdf-packer
 
 go 1.26.4
 
-require github.com/pdfcpu/pdfcpu v0.13.0
+require (
+	github.com/ledongthuc/pdf v0.0.0-20250511090121-5959a4027728
+	github.com/pdfcpu/pdfcpu v0.13.0
+)
 
 require (
 	github.com/clipperhouse/uax29/v2 v2.7.0 // indirect

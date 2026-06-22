@@ -5,6 +5,8 @@ package main
 import (
 	"fmt"
 	"os"
+
+	"github.com/ledongthuc/pdf"
 )
 
 func main() {
@@ -19,7 +21,24 @@ func main() {
 			fmt.Fprintln(os.Stderr, in+":", err)
 			continue
 		}
-		fmt.Println("normalized", in, "->", norm)
+		f, r, err := pdf.Open(norm)
+		if err != nil {
+			os.Remove(norm)
+			fmt.Fprintln(os.Stderr, in+":", err)
+			continue
+		}
+		for pno := 1; pno <= r.NumPage(); pno++ {
+			p := r.Page(pno)
+			if p.V.IsNull() {
+				continue
+			}
+			for _, l := range clusterLines(p) {
+				if s := l.text(); s != "" {
+					fmt.Println(s)
+				}
+			}
+		}
+		f.Close()
 		os.Remove(norm)
 	}
 }
