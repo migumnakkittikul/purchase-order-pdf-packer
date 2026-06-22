@@ -1,0 +1,18 @@
+# build output
+/dist/
+*.exe
+*.zip
+
+# generated output when running locally
+*_pack.pdf
+*_pack.xlsx
+PO_pack.pdf
+PO_pack.xlsx
+
+# go
+/vendor/
+
+# editor / OS
+.vscode/
+.idea/
+.DS_Store
