@@ -32,9 +32,12 @@ func main() {
 		os.Remove(norm)
 
 		fmt.Printf("%s: %d item(s)\n", in, len(items))
+		labels := 0
 		for _, it := range items {
 			fmt.Printf("  %-10s %-40s %6s %-8s %10s  x%d label(s)\n",
 				it.Code, it.Name, fmtQty(it), it.Unit, fmtMoney(it.Price), labelsNeeded(it))
+			labels += labelsNeeded(it)
 		}
+		fmt.Printf("  -> %d label(s) to print\n", labels)
 	}
 }
