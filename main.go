@@ -27,18 +27,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, in+":", err)
 			continue
 		}
-		for pno := 1; pno <= r.NumPage(); pno++ {
-			p := r.Page(pno)
-			if p.V.IsNull() {
-				continue
-			}
-			for _, l := range clusterLines(p) {
-				if s := l.text(); s != "" {
-					fmt.Println(s)
-				}
-			}
-		}
+		items := extractItems(r)
 		f.Close()
 		os.Remove(norm)
+
+		fmt.Printf("%s: %d item(s)\n", in, len(items))
+		for _, it := range items {
+			fmt.Printf("  %-10s %-40s %5s %-8s %8s\n", it.Code, it.Name, it.Qty, it.Unit, it.Price)
+		}
 	}
 }
