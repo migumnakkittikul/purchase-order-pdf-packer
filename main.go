@@ -33,7 +33,8 @@ func main() {
 
 		fmt.Printf("%s: %d item(s)\n", in, len(items))
 		for _, it := range items {
-			fmt.Printf("  %-10s %-40s %5s %-8s %8s\n", it.Code, it.Name, it.Qty, it.Unit, it.Price)
+			fmt.Printf("  %-10s %-40s %6s %-8s %10s  x%d label(s)\n",
+				it.Code, it.Name, fmtQty(it), it.Unit, fmtMoney(it.Price), labelsNeeded(it))
 		}
 	}
 }
