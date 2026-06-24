@@ -15,6 +15,7 @@ func main() {
 		fmt.Println("usage: popack <po.pdf> [more.pdf ...]")
 		return
 	}
+	fam := loadFontFamily()
 	for _, in := range args {
 		norm, err := normalizePDF(in)
 		if err != nil {
@@ -30,14 +31,31 @@ func main() {
 		items := extractItems(r)
 		f.Close()
 		os.Remove(norm)
-
-		fmt.Printf("%s: %d item(s)\n", in, len(items))
-		labels := 0
-		for _, it := range items {
-			fmt.Printf("  %-10s %-40s %6s %-8s %10s  x%d label(s)\n",
-				it.Code, it.Name, fmtQty(it), it.Unit, fmtMoney(it.Price), labelsNeeded(it))
-			labels += labelsNeeded(it)
+		if len(items) == 0 {
+			fmt.Println(in + ": no line items found")
+			continue
 		}
-		fmt.Printf("  -> %d label(s) to print\n", labels)
+
+		counts := make([]int, len(items))
+		for i, it := range items {
+			counts[i] = labelsNeeded(it)
+		}
+		docNo := items[0].DocNo
+		if docNo == "" {
+			docNo = baseName(in)
+		}
+		dir, _ := os.MkdirTemp("", "popack")
+		paths, err := renderTablePages(dir, docNo, items, counts, fam)
+		if err != nil {
+			os.RemoveAll(dir)
+			fmt.Fprintln(os.Stderr, in+":", err)
+			continue
+		}
+		out := baseName(in) + "_summary.pdf"
+		if data, err := os.ReadFile(paths[0]); err == nil {
+			os.WriteFile(out, data, 0o644)
+		}
+		os.RemoveAll(dir)
+		fmt.Printf("%s: %d item(s) -> %s (%d page(s))\n", in, len(items), out, len(paths))
 	}
 }
