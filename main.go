@@ -5,57 +5,42 @@ package main
 import (
 	"fmt"
 	"os"
-
-	"github.com/ledongthuc/pdf"
+	"path/filepath"
 )
 
 func main() {
 	args := os.Args[1:]
-	if len(args) == 0 {
-		fmt.Println("usage: popack <po.pdf> [more.pdf ...]")
+
+	var inputs []string
+	out := ""
+	for i := 0; i < len(args); i++ {
+		if args[i] == "-o" && i+1 < len(args) {
+			out = args[i+1]
+			i++
+			continue
+		}
+		inputs = append(inputs, args[i])
+	}
+	if len(inputs) == 0 {
+		fmt.Println("usage: popack [-o out.pdf] <po.pdf> [more.pdf ...]")
 		return
 	}
-	fam := loadFontFamily()
-	for _, in := range args {
-		norm, err := normalizePDF(in)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, in+":", err)
-			continue
+	if out == "" {
+		dir := filepath.Dir(inputs[0])
+		if len(inputs) == 1 {
+			out = filepath.Join(dir, baseName(inputs[0])+"_pack.pdf")
+		} else {
+			out = filepath.Join(dir, "PO_pack.pdf")
 		}
-		f, r, err := pdf.Open(norm)
-		if err != nil {
-			os.Remove(norm)
-			fmt.Fprintln(os.Stderr, in+":", err)
-			continue
-		}
-		items := extractItems(r)
-		f.Close()
-		os.Remove(norm)
-		if len(items) == 0 {
-			fmt.Println(in + ": no line items found")
-			continue
-		}
+	}
 
-		counts := make([]int, len(items))
-		for i, it := range items {
-			counts[i] = labelsNeeded(it)
-		}
-		docNo := items[0].DocNo
-		if docNo == "" {
-			docNo = baseName(in)
-		}
-		dir, _ := os.MkdirTemp("", "popack")
-		paths, err := renderTablePages(dir, docNo, items, counts, fam)
-		if err != nil {
-			os.RemoveAll(dir)
-			fmt.Fprintln(os.Stderr, in+":", err)
-			continue
-		}
-		out := baseName(in) + "_summary.pdf"
-		if data, err := os.ReadFile(paths[0]); err == nil {
-			os.WriteFile(out, data, 0o644)
-		}
-		os.RemoveAll(dir)
-		fmt.Printf("%s: %d item(s) -> %s (%d page(s))\n", in, len(items), out, len(paths))
+	n, warns, err := convert(inputs, out, true, nil)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
+	fmt.Printf("wrote %s (%d section(s))\n", out, n)
+	for _, w := range warns {
+		fmt.Println("  warning:", w)
 	}
 }
