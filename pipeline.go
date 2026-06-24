@@ -3,10 +3,12 @@ package main
 import (
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 
+	"github.com/ledongthuc/pdf"
 	pdfapi "github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
@@ -233,4 +235,121 @@ func writeXLSX(items []Item, path string) error {
 	}
 	fx.SetPanes(sh, &excelize.Panes{Freeze: true, YSplit: 1, TopLeftCell: "A2", ActivePane: "bottomLeft"})
 	return fx.SaveAs(path)
+}
+
+// ---- full conversion ------------------------------------------------------ //
+
+// convert builds one combined PDF (per PO: summary table + needed labels) from
+// the inputs, and writes an .xlsx copy. Returns (#PDF sections, warnings, err).
+// progress (if non-nil) is called as work proceeds: progress(done, total, msg).
+func convert(inputs []string, outPDF string, writeXlsx bool,
+	progress func(done, total int, msg string)) (int, []string, error) {
+
+	total := len(inputs) + 1 // last step = combine labels + save
+	prog := func(done int, msg string) {
+		if progress != nil {
+			progress(done, total, msg)
+		}
+	}
+
+	conf := newConf()
+	tmpDir, err := os.MkdirTemp("", "popack")
+	if err != nil {
+		return 0, nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+	fam := loadFontFamily()
+
+	var tablePaths []string  // all PO summary pages (top of the output)
+	var allTiles []labelTile // all labels from all POs (combined at the bottom)
+	var allRows []Item
+	var warnings []string
+
+	for idx, in := range inputs {
+		name := filepath.Base(in)
+		prog(idx, "Processing "+name)
+		poDir := filepath.Join(tmpDir, fmt.Sprintf("po%d", idx))
+		if err := os.MkdirAll(poDir, 0o755); err != nil {
+			return 0, nil, err
+		}
+		norm, err := normalizePDF(in)
+		if err != nil {
+			warnings = append(warnings, name+": could not read PDF; skipped.")
+			continue
+		}
+		f, r, err := pdf.Open(norm)
+		if err != nil {
+			os.Remove(norm)
+			warnings = append(warnings, name+": could not open PDF; skipped.")
+			continue
+		}
+		items := extractItems(r)
+		codes := make([]string, len(items))
+		for i, it := range items {
+			codes[i] = it.Code
+		}
+		loc := scanLabels(r, codes)
+		f.Close()
+
+		if len(items) == 0 {
+			os.Remove(norm)
+			warnings = append(warnings, name+": no PO line items found (different layout or scanned PDF).")
+			continue
+		}
+		allRows = append(allRows, items...)
+
+		counts := make([]int, len(items))
+		for i, it := range items {
+			if _, ok := loc[it.Code]; !ok {
+				counts[i] = -1
+				warnings = append(warnings, fmt.Sprintf("%s: no label page for item %s.", name, it.Code))
+				continue
+			}
+			counts[i] = labelsNeeded(it)
+		}
+
+		docNo := items[0].DocNo
+		if docNo == "" {
+			docNo = baseName(in)
+		}
+		tps, err := renderTablePages(poDir, docNo, items, counts, fam)
+		if err != nil {
+			os.Remove(norm)
+			warnings = append(warnings, name+": table render failed: "+err.Error())
+			continue
+		}
+		tile, err := buildPOLabels(poDir, norm, items, loc, counts, conf)
+		os.Remove(norm)
+		if err != nil {
+			warnings = append(warnings, name+": label build failed: "+err.Error())
+		}
+		tablePaths = append(tablePaths, tps...)
+		if tile != nil {
+			allTiles = append(allTiles, *tile)
+		}
+	}
+
+	if len(tablePaths) == 0 {
+		return 0, warnings, fmt.Errorf("nothing produced - no readable PO pages in the input")
+	}
+	prog(len(inputs), "Combining labels and saving...")
+	// all summaries first, then all labels packed together at the bottom
+	sections := append([]string{}, tablePaths...)
+	sheets, err := packLabels(tmpDir, allTiles, conf)
+	if err != nil {
+		warnings = append(warnings, "label packing failed: "+err.Error())
+	} else if sheets != "" {
+		sections = append(sections, sheets)
+	}
+	if err := pdfapi.MergeCreateFile(sections, outPDF, false, conf); err != nil {
+		return 0, warnings, fmt.Errorf("final merge: %w", err)
+	}
+	if writeXlsx && len(allRows) > 0 {
+		xlsx := strings.TrimSuffix(outPDF, filepath.Ext(outPDF)) + ".xlsx"
+		if err := writeXLSX(allRows, xlsx); err != nil {
+			warnings = append(warnings, "Excel copy not written: "+err.Error())
+		}
+	}
+	prog(total, "Done")
+	return len(sections), warnings, nil
 }
