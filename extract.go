@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -197,4 +198,8 @@ func parseNum(s string) (float64, bool) {
 	}
 	v, err := strconv.ParseFloat(s, 64)
 	return v, err == nil
+}
+
+func baseName(p string) string {
+	return strings.TrimSuffix(filepath.Base(p), filepath.Ext(p))
 }
