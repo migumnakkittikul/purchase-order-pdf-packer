@@ -10,6 +10,7 @@ import (
 	pdfapi "github.com/pdfcpu/pdfcpu/pkg/api"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu/types"
+	"github.com/xuri/excelize/v2"
 )
 
 func init() { model.ConfigPath = "disable" } // no per-user config dir on the target PC
@@ -191,4 +192,45 @@ func packLabels(tmpDir string, tiles []labelTile, conf *model.Configuration) (st
 		return "", fmt.Errorf("nup labels: %w", err)
 	}
 	return sheets, nil
+}
+
+// ---- xlsx ----------------------------------------------------------------- //
+
+var xlsxHeaders = []string{
+	"เลขที่เอกสาร", "สถานที่ส่งสินค้า", "รหัสสินค้า", "ชื่อสินค้า",
+	"จำนวน", "หน่วย", "จำนวนรวม (ชิ้น)", "ราคา",
+}
+
+func writeXLSX(items []Item, path string) error {
+	fx := excelize.NewFile()
+	defer fx.Close()
+	sh := "PO Items"
+	fx.SetSheetName("Sheet1", sh)
+	style, _ := fx.NewStyle(&excelize.Style{
+		Font:      &excelize.Font{Bold: true, Color: "FFFFFF"},
+		Fill:      excelize.Fill{Type: "pattern", Pattern: 1, Color: []string{"1F4E78"}},
+		Alignment: &excelize.Alignment{Horizontal: "center", Vertical: "center"},
+	})
+	for i, h := range xlsxHeaders {
+		cell, _ := excelize.CoordinatesToCellName(i+1, 1)
+		fx.SetCellValue(sh, cell, h)
+	}
+	fx.SetCellStyle(sh, "A1", "H1", style)
+	for r, it := range items {
+		row := r + 2
+		q, _ := parseNum(it.Qty)
+		pr, _ := parseNum(it.Price)
+		vals := []any{it.DocNo, it.Delivery, it.Code, it.Name, q, it.Unit, q * float64(it.Pack), pr}
+		for c, v := range vals {
+			cell, _ := excelize.CoordinatesToCellName(c+1, row)
+			fx.SetCellValue(sh, cell, v)
+		}
+	}
+	widths := []float64{16, 22, 14, 46, 9, 9, 14, 12}
+	for i, w := range widths {
+		col, _ := excelize.ColumnNumberToName(i + 1)
+		fx.SetColWidth(sh, col, col, w)
+	}
+	fx.SetPanes(sh, &excelize.Panes{Freeze: true, YSplit: 1, TopLeftCell: "A2", ActivePane: "bottomLeft"})
+	return fx.SaveAs(path)
 }
