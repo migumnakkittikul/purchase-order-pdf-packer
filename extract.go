@@ -69,6 +69,17 @@ type textLine struct {
 	frags []frag // stream order preserved
 }
 
+// safeClusterLines wraps clusterLines: ledongthuc/pdf panics on some content
+// streams, so we recover and report the page as unreadable instead of crashing.
+func safeClusterLines(p pdf.Page) (lines []textLine, ok bool) {
+	defer func() {
+		if recover() != nil {
+			lines, ok = nil, false
+		}
+	}()
+	return clusterLines(p), true
+}
+
 // clusterLines groups char fragments into visual lines by Y (stream order kept).
 func clusterLines(p pdf.Page) []textLine {
 	const tol = 3.5
@@ -142,7 +153,10 @@ func extractItems(r *pdf.Reader) []Item {
 		if p.V.IsNull() {
 			continue
 		}
-		lines := clusterLines(p)
+		lines, ok := safeClusterLines(p)
+		if !ok {
+			continue // page the reader couldn't parse; skip it
+		}
 		var full strings.Builder
 		for _, l := range lines {
 			full.WriteString(l.text())
