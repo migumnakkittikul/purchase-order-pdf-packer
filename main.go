@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
+
+const appTitle = "PO PDF Packer"
 
 func main() {
 	args := os.Args[1:]
@@ -21,10 +24,24 @@ func main() {
 		}
 		inputs = append(inputs, args[i])
 	}
+
+	// Double-clicked with no files: pick the PDFs, then a save location.
+	// Dragging files onto the icon also works.
 	if len(inputs) == 0 {
-		fmt.Println("usage: popack [-o out.pdf] <po.pdf> [more.pdf ...]")
-		return
+		inputs = openFilesDialog()
+		if len(inputs) == 0 {
+			return // cancelled
+		}
+		def := "PO_pack.pdf"
+		if len(inputs) == 1 {
+			def = baseName(inputs[0]) + "_pack.pdf"
+		}
+		out = saveFileDialog(def, filepath.Dir(inputs[0]))
+		if out == "" {
+			return // cancelled
+		}
 	}
+
 	if out == "" {
 		dir := filepath.Dir(inputs[0])
 		if len(inputs) == 1 {
@@ -36,11 +53,15 @@ func main() {
 
 	n, warns, err := convert(inputs, out, true, nil)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		msgError(appTitle, "Could not process the file(s):\n\n"+err.Error())
 		os.Exit(1)
 	}
-	fmt.Printf("wrote %s (%d section(s))\n", out, n)
-	for _, w := range warns {
-		fmt.Println("  warning:", w)
+	msg := fmt.Sprintf("Finished: %d page group(s).\n\nSaved to:\n%s\n\nAn Excel (.xlsx) copy was saved next to it.",
+		n, out)
+	if len(warns) > 0 {
+		msg += "\n\nNotes:\n- " + strings.Join(warns, "\n- ")
+	}
+	if askYesNo(appTitle, msg+"\n\nOpen it now?") {
+		openFile(out)
 	}
 }
