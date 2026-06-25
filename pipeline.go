@@ -21,6 +21,14 @@ func newConf() *model.Configuration {
 	conf := model.NewDefaultConfiguration()
 	conf.ValidationMode = model.ValidationRelaxed
 	conf.Unit = types.POINTS // interpret all dimensions in points
+	// Merging many single-label files builds a deep page tree; the default
+	// limit (100) rejects large label batches. We control these intermediate
+	// files, so raise it well beyond any realistic label count.
+	conf.Limits.MaxRecursionDepth = 1_000_000
+	// Don't add a per-file bookmark on merge - with hundreds of label files it
+	// produces an invalid outline/Name tree ("invalid Name ref"), and we don't
+	// want bookmarks on the label sheets anyway.
+	conf.CreateBookmarks = false
 	return conf
 }
 
