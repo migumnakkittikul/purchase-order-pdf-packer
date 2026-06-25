@@ -4,7 +4,10 @@ package main
 
 import (
 	"os/exec"
+	"runtime"
+	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -346,12 +349,60 @@ func (p *progressWin) destroy() {
 	p.hwnd = 0
 }
 
-// newProgress creates the progress window and returns helpers to update and
-// close it. Returns no-op helpers if the window can't be created, so the
-// conversion still runs and saves.
+type progressUI struct {
+	mu          sync.Mutex
+	done, total int
+	msg         string
+	stop        bool
+	closed      chan struct{}
+}
+
+// newProgress runs the progress window on its OWN OS-thread-locked goroutine
+// that pumps the message loop continuously, so it stays responsive while the
+// worker (main goroutine) does the conversion. The worker only updates shared
+// state - it never calls into the window across threads, which would otherwise
+// deadlock SendMessageW once Go migrates the goroutine during file I/O.
+// Returns no-op helpers if the window can't be created, so conversion still runs.
 func newProgress(total int) (func(int, int, string), func()) {
-	p := createProgressWindow(appTitle, total)
-	update := func(done, total int, msg string) { p.update(done, total, msg) }
-	closeFn := func() { p.destroy() }
+	ui := &progressUI{total: total, msg: "Starting...", closed: make(chan struct{})}
+	ready := make(chan struct{})
+	go ui.run(ready)
+	<-ready
+	update := func(d, t int, m string) {
+		ui.mu.Lock()
+		ui.done, ui.total, ui.msg = d, t, m
+		ui.mu.Unlock()
+	}
+	closeFn := func() {
+		ui.mu.Lock()
+		ui.stop = true
+		ui.mu.Unlock()
+		<-ui.closed
+	}
 	return update, closeFn
+}
+
+func (ui *progressUI) run(ready chan struct{}) {
+	runtime.LockOSThread() // the window + all its messages live on this one thread
+	defer runtime.UnlockOSThread()
+
+	p := createProgressWindow(appTitle, ui.total)
+	logStep("createProgressWindow ok=%v", p != nil)
+	close(ready)
+	if p == nil {
+		close(ui.closed)
+		return
+	}
+	for {
+		ui.mu.Lock()
+		d, t, m, stop := ui.done, ui.total, ui.msg, ui.stop
+		ui.mu.Unlock()
+		p.update(d, t, m) // SetText + SetPos + pump - all on this locked thread
+		if stop {
+			break
+		}
+		time.Sleep(40 * time.Millisecond)
+	}
+	p.destroy()
+	close(ui.closed)
 }
