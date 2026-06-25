@@ -11,6 +11,27 @@ import (
 
 const appTitle = "PO PDF Packer"
 
+// consoleProgress draws a simple text progress bar (non-Windows fallback).
+func consoleProgress(done, total int, msg string) {
+	const w = 28
+	filled, pct := w, 100
+	if total > 0 {
+		filled = done * w / total
+		pct = done * 100 / total
+	}
+	if filled > w {
+		filled = w
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	fmt.Printf("\r  [%s%s] %3d%%  %-46.46s",
+		strings.Repeat("#", filled), strings.Repeat("-", w-filled), pct, msg)
+	if done >= total {
+		fmt.Println()
+	}
+}
+
 func main() {
 	args := os.Args[1:]
 
@@ -51,7 +72,9 @@ func main() {
 		}
 	}
 
-	n, warns, err := convert(inputs, out, true, nil)
+	prog, closeProg := newProgress(len(inputs) + 1)
+	n, warns, err := convert(inputs, out, true, prog)
+	closeProg()
 	if err != nil {
 		msgError(appTitle, "Could not process the file(s):\n\n"+err.Error())
 		os.Exit(1)

@@ -16,3 +16,8 @@ func openFile(string) {}
 // No native pickers off-Windows (development only).
 func openFilesDialog() []string         { return nil }
 func saveFileDialog(_, _ string) string { return "" }
+
+// newProgress uses the console bar off-Windows (for development/testing).
+func newProgress(int) (func(int, int, string), func()) {
+	return consoleProgress, func() {}
+}

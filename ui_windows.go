@@ -188,3 +188,170 @@ func askYesNo(title, text string) bool {
 func openFile(path string) {
 	_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", path).Start()
 }
+
+// ---- native progress window ---------------------------------------------- //
+//
+// A small window with a label and a progress bar. If creating it fails, the
+// helpers below no-op so the conversion still runs and saves.
+
+var (
+	kernel32            = syscall.NewLazyDLL("kernel32.dll")
+	comctl32            = syscall.NewLazyDLL("comctl32.dll")
+	gdi32               = syscall.NewLazyDLL("gdi32.dll")
+	procGetModuleHandle = kernel32.NewProc("GetModuleHandleW")
+	procInitCommonCtrl  = comctl32.NewProc("InitCommonControlsEx")
+	procRegisterClassEx = user32.NewProc("RegisterClassExW")
+	procCreateWindowEx  = user32.NewProc("CreateWindowExW")
+	procDefWindowProc   = user32.NewProc("DefWindowProcW")
+	procShowWindow      = user32.NewProc("ShowWindow")
+	procUpdateWindow    = user32.NewProc("UpdateWindow")
+	procSendMessage     = user32.NewProc("SendMessageW")
+	procSetWindowText   = user32.NewProc("SetWindowTextW")
+	procDestroyWindow   = user32.NewProc("DestroyWindow")
+	procPeekMessage     = user32.NewProc("PeekMessageW")
+	procTranslateMsg    = user32.NewProc("TranslateMessage")
+	procDispatchMsg     = user32.NewProc("DispatchMessageW")
+	procGetSysMetrics   = user32.NewProc("GetSystemMetrics")
+	procLoadCursor      = user32.NewProc("LoadCursorW")
+	procGetStockObject  = gdi32.NewProc("GetStockObject")
+)
+
+type wndClassExW struct {
+	cbSize        uint32
+	style         uint32
+	lpfnWndProc   uintptr
+	cbClsExtra    int32
+	cbWndExtra    int32
+	hInstance     uintptr
+	hIcon         uintptr
+	hCursor       uintptr
+	hbrBackground uintptr
+	lpszMenuName  *uint16
+	lpszClassName *uint16
+	hIconSm       uintptr
+}
+
+type initCommonControlsEx struct {
+	dwSize uint32
+	dwICC  uint32
+}
+
+type win32msg struct {
+	hwnd     uintptr
+	message  uint32
+	wParam   uintptr
+	lParam   uintptr
+	time     uint32
+	pt       struct{ x, y int32 }
+	lPrivate uint32
+}
+
+type progressWin struct{ hwnd, bar, label uintptr }
+
+func u16(s string) *uint16 { p, _ := syscall.UTF16PtrFromString(s); return p }
+
+func createProgressWindow(title string, total int) *progressWin {
+	const (
+		wsCaption  = 0x00C00000
+		wsSysMenu  = 0x00080000
+		wsChild    = 0x40000000
+		wsVisible  = 0x10000000
+		pbsSmooth  = 0x01
+		swNormal   = 1
+		iccProgr   = 0x20
+		defGUIFont = 17
+		wmSetFont  = 0x0030
+		pbmRange32 = 0x0406
+		idcArrow   = 32512
+	)
+	icc := initCommonControlsEx{dwSize: uint32(unsafe.Sizeof(initCommonControlsEx{})), dwICC: iccProgr}
+	procInitCommonCtrl.Call(uintptr(unsafe.Pointer(&icc)))
+
+	hInst, _, _ := procGetModuleHandle.Call(0)
+	cursor, _, _ := procLoadCursor.Call(0, idcArrow)
+
+	className := u16("popackProgressClass")
+	wc := wndClassExW{
+		lpfnWndProc:   procDefWindowProc.Addr(),
+		hInstance:     hInst,
+		hCursor:       cursor,
+		hbrBackground: 6, // COLOR_WINDOW+1
+		lpszClassName: className,
+	}
+	wc.cbSize = uint32(unsafe.Sizeof(wc))
+	procRegisterClassEx.Call(uintptr(unsafe.Pointer(&wc))) // ok if already registered
+
+	sx, _, _ := procGetSysMetrics.Call(0) // SM_CXSCREEN
+	sy, _, _ := procGetSysMetrics.Call(1) // SM_CYSCREEN
+	w, h := 460, 160
+	x := (int(sx) - w) / 2
+	y := (int(sy) - h) / 2
+
+	hwnd, _, _ := procCreateWindowEx.Call(0,
+		uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(u16(title))),
+		wsCaption|wsSysMenu, uintptr(x), uintptr(y), uintptr(w), uintptr(h),
+		0, 0, hInst, 0)
+	if hwnd == 0 {
+		return nil
+	}
+
+	label, _, _ := procCreateWindowEx.Call(0,
+		uintptr(unsafe.Pointer(u16("STATIC"))), uintptr(unsafe.Pointer(u16("Starting..."))),
+		wsChild|wsVisible, 24, 22, 400, 26, hwnd, 0, hInst, 0)
+	bar, _, _ := procCreateWindowEx.Call(0,
+		uintptr(unsafe.Pointer(u16("msctls_progress32"))), 0,
+		wsChild|wsVisible|pbsSmooth, 24, 60, 400, 26, hwnd, 0, hInst, 0)
+
+	if font, _, _ := procGetStockObject.Call(defGUIFont); font != 0 {
+		procSendMessage.Call(label, wmSetFont, font, 1)
+	}
+	procSendMessage.Call(bar, pbmRange32, 0, uintptr(total))
+	procShowWindow.Call(hwnd, swNormal)
+	procUpdateWindow.Call(hwnd)
+
+	p := &progressWin{hwnd: hwnd, bar: bar, label: label}
+	p.pump()
+	return p
+}
+
+func (p *progressWin) pump() {
+	const pmRemove = 0x0001
+	var m win32msg
+	for {
+		r, _, _ := procPeekMessage.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0, pmRemove)
+		if r == 0 {
+			break
+		}
+		procTranslateMsg.Call(uintptr(unsafe.Pointer(&m)))
+		procDispatchMsg.Call(uintptr(unsafe.Pointer(&m)))
+	}
+}
+
+func (p *progressWin) update(done, total int, msg string) {
+	if p == nil || p.hwnd == 0 {
+		return
+	}
+	const pbmSetPos = 0x0402
+	procSetWindowText.Call(p.label, uintptr(unsafe.Pointer(u16(msg))))
+	procSendMessage.Call(p.bar, pbmSetPos, uintptr(done), 0)
+	p.pump()
+}
+
+func (p *progressWin) destroy() {
+	if p == nil || p.hwnd == 0 {
+		return
+	}
+	procDestroyWindow.Call(p.hwnd)
+	p.pump()
+	p.hwnd = 0
+}
+
+// newProgress creates the progress window and returns helpers to update and
+// close it. Returns no-op helpers if the window can't be created, so the
+// conversion still runs and saves.
+func newProgress(total int) (func(int, int, string), func()) {
+	p := createProgressWindow(appTitle, total)
+	update := func(done, total int, msg string) { p.update(done, total, msg) }
+	closeFn := func() { p.destroy() }
+	return update, closeFn
+}
