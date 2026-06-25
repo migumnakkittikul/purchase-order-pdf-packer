@@ -1,5 +1,6 @@
-// Command POPack converts SAP-generated purchase-order PDFs into a compact
-// summary plus the receiving labels that are actually needed.
+// Command POPack converts a retailer's SAP-generated purchase-order PDFs into a
+// single compact PDF (an order summary plus only the receiving labels that are
+// needed) and an Excel copy. It builds to a standalone Windows executable.
 package main
 
 import (
@@ -7,9 +8,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const appTitle = "PO PDF Packer"
+
+// logStep appends a timestamped line to a log file in the temp dir, so if the
+// tool stalls on someone's machine the last line shows how far it got.
+func logStep(format string, a ...any) {
+	f, err := os.OpenFile(filepath.Join(os.TempDir(), "POPack.log"),
+		os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, time.Now().Format("15:04:05.000")+"  "+format+"\n", a...)
+}
 
 // consoleProgress draws a simple text progress bar (non-Windows fallback).
 func consoleProgress(done, total int, msg string) {
@@ -35,6 +49,7 @@ func consoleProgress(done, total int, msg string) {
 func main() {
 	args := os.Args[1:]
 
+	// Collect input PDFs (also supports -o out.pdf from the command line).
 	var inputs []string
 	out := ""
 	for i := 0; i < len(args); i++ {
@@ -72,9 +87,16 @@ func main() {
 		}
 	}
 
-	prog, closeProg := newProgress(len(inputs) + 1)
+	logStep("start: %d file(s) -> %q", len(inputs), out)
+	rawProg, closeProg := newProgress(len(inputs) + 1)
+	prog := func(d, t int, m string) {
+		logStep("step %d/%d %s", d, t, m)
+		rawProg(d, t, m)
+	}
 	n, warns, err := convert(inputs, out, true, prog)
+	logStep("convert returned: sections=%d warns=%d err=%v", n, len(warns), err)
 	closeProg()
+
 	if err != nil {
 		msgError(appTitle, "Could not process the file(s):\n\n"+err.Error())
 		os.Exit(1)
@@ -87,4 +109,5 @@ func main() {
 	if askYesNo(appTitle, msg+"\n\nOpen it now?") {
 		openFile(out)
 	}
+	logStep("end")
 }
