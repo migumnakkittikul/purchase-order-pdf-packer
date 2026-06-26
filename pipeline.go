@@ -140,8 +140,10 @@ func buildPOLabels(poDir, norm string, items []Item, loc map[string]labelLoc,
 		if err := pdfapi.CollectFile(norm, one, []string{strconv.Itoa(l.Page)}, conf); err != nil {
 			return nil, fmt.Errorf("collect label page: %w", err)
 		}
-		// crop it to the label's border box (top-left quadrant)
-		box, err := pdfapi.Box(fmt.Sprintf("[%g %g %g %g]", 12.0, h/2, w/2-18, h-28), types.POINTS)
+		// crop it to the label's border box: tight inside the top-left quadrant
+		// (which has built-in whitespace) so it prints at original size with even
+		// margins. Insets from the SAP template.
+		box, err := pdfapi.Box(fmt.Sprintf("[%g %g %g %g]", 11.0, h/2-3, w/2-21, h-25), types.POINTS)
 		if err != nil {
 			return nil, err
 		}
@@ -196,7 +198,7 @@ func packLabels(tmpDir string, tiles []labelTile, conf *model.Configuration) (st
 	nup.PageSize = ""
 	nup.UserDim = true
 	nup.InpUnit = types.POINTS
-	nup.Margin = 6 // labels print at ~original size; this just spaces them out
+	nup.Margin = 12 // labels print at ~original size; this just spaces them out
 	sheets := filepath.Join(tmpDir, "label_sheets.pdf")
 	if err := pdfapi.NUpFile([]string{merged}, sheets, nil, nup, conf); err != nil {
 		return "", fmt.Errorf("nup labels: %w", err)
