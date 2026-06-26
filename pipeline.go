@@ -119,57 +119,69 @@ type labelTile struct {
 }
 
 // buildPOLabels produces ONE multi-page PDF of this PO's needed labels, in
-// order and with repetition for copies, each cropped tight to its border box.
+// order with repetition for copies, each cropped tight to its border box.
+// It uses just 3 pdfcpu calls regardless of label count (was 2*distinct + copies).
 func buildPOLabels(poDir, norm string, items []Item, loc map[string]labelLoc,
 	counts []int, conf *model.Configuration) (*labelTile, error) {
 
-	// crop each needed label page to its own single-page PDF
-	cropFor := map[int]string{} // source page -> cropped single-label file
+	// distinct label pages needed (first-seen order) + the label page size
+	var distinct []int
+	seen := map[int]bool{}
 	var w, h float64
 	for i, it := range items {
 		l, ok := loc[it.Code]
 		if !ok || counts[i] <= 0 {
 			continue
 		}
-		w, h = l.W, l.H
-		if _, done := cropFor[l.Page]; done {
-			continue
+		if !seen[l.Page] {
+			seen[l.Page] = true
+			distinct = append(distinct, l.Page)
+			w, h = l.W, l.H
 		}
-		// pull this single label page out of the source
-		one := filepath.Join(poDir, fmt.Sprintf("page_%d.pdf", l.Page))
-		if err := pdfapi.CollectFile(norm, one, []string{strconv.Itoa(l.Page)}, conf); err != nil {
-			return nil, fmt.Errorf("collect label page: %w", err)
-		}
-		// crop it to the label's border box: tight inside the top-left quadrant
-		// (which has built-in whitespace) so it prints at original size with even
-		// margins. Insets from the SAP template.
-		box, err := pdfapi.Box(fmt.Sprintf("[%g %g %g %g]", 11.0, h/2-3, w/2-21, h-25), types.POINTS)
-		if err != nil {
-			return nil, err
-		}
-		cr := filepath.Join(poDir, fmt.Sprintf("crop_%d.pdf", l.Page))
-		if err := pdfapi.CropFile(one, cr, nil, box, conf); err != nil {
-			return nil, fmt.Errorf("crop label: %w", err)
-		}
-		cropFor[l.Page] = cr
 	}
-	if len(cropFor) == 0 {
+	if len(distinct) == 0 {
 		return nil, nil
 	}
 
-	// merge the cropped labels in order, repeating each by its copy count
-	var parts []string
+	// 1) collect all needed label pages in one pass
+	sel := make([]string, len(distinct))
+	for i, p := range distinct {
+		sel[i] = strconv.Itoa(p)
+	}
+	collected := filepath.Join(poDir, "collected.pdf")
+	if err := pdfapi.CollectFile(norm, collected, sel, conf); err != nil {
+		return nil, fmt.Errorf("collect labels: %w", err)
+	}
+
+	// 2) crop every collected page to the label's border box (same box for all).
+	// Tight inside the top-left quadrant (which has built-in whitespace) so it
+	// prints at original size with even margins. Insets from the SAP template.
+	box, err := pdfapi.Box(fmt.Sprintf("[%g %g %g %g]", 11.0, h/2-3, w/2-21, h-25), types.POINTS)
+	if err != nil {
+		return nil, err
+	}
+	cropped := filepath.Join(poDir, "cropped.pdf")
+	if err := pdfapi.CropFile(collected, cropped, nil, box, conf); err != nil {
+		return nil, fmt.Errorf("crop labels: %w", err)
+	}
+
+	// 3) expand to the final order with repetition (collect supports both)
+	idxOf := map[int]int{} // original page -> 1-based index within cropped.pdf
+	for i, p := range distinct {
+		idxOf[p] = i + 1
+	}
+	var ord []string
 	for i, it := range items {
 		l, ok := loc[it.Code]
 		if !ok || counts[i] <= 0 {
 			continue
 		}
 		for k := 0; k < counts[i]; k++ {
-			parts = append(parts, cropFor[l.Page])
+			ord = append(ord, strconv.Itoa(idxOf[l.Page]))
 		}
 	}
 	ordered := filepath.Join(poDir, "ordered.pdf")
-	if err := pdfapi.MergeCreateFile(parts, ordered, false, conf); err != nil {
+	if err := pdfapi.CollectFile(cropped, ordered, ord, conf); err != nil {
 		return nil, fmt.Errorf("order labels: %w", err)
 	}
 	return &labelTile{file: ordered, w: w, h: h}, nil
