@@ -25,6 +25,12 @@ type Item struct {
 	Price    string
 }
 
+// Info carries the PO's own printed goods subtotal, used to check that
+// extraction picked up every line item.
+type Info struct {
+	PrintedGoods float64
+}
+
 // Column x-boundaries, taken from the SAP-generated PO table header (points).
 // [lo, hi)
 var (
@@ -41,11 +47,21 @@ var (
 	reCode      = regexp.MustCompile(`^\d{6,}$`)
 	reNum       = regexp.MustCompile(`\d[\d,]*(?:\.\d+)?`)
 	rePack      = regexp.MustCompile(`\((\d+)\)`)
+	reSubtotal  = regexp.MustCompile(`รวมมูลค่าสินค้[า\s]*[:：]\s*([\d,]+\.\d{2})`)
 	reTrailSpac = regexp.MustCompile(`\s+`)
 )
 
+type frag struct {
+	x float64
+	s string
+}
+type textLine struct {
+	y     float64
+	frags []frag // stream order preserved
+}
+
 // normalizePDF runs the PDF through pdfcpu so strict readers can parse it.
-// Returns the path of a temp normalized file (the caller removes it).
+// Returns the path of a temp normalized file (caller removes it).
 func normalizePDF(path string) (string, error) {
 	tmp, err := os.CreateTemp("", "popack-norm-*.pdf")
 	if err != nil {
@@ -57,16 +73,6 @@ func normalizePDF(path string) (string, error) {
 		return "", err
 	}
 	return tmp.Name(), nil
-}
-
-type frag struct {
-	x float64
-	s string
-}
-
-type textLine struct {
-	y     float64
-	frags []frag // stream order preserved
 }
 
 // safeClusterLines wraps clusterLines: ledongthuc/pdf panics on some content
@@ -144,7 +150,8 @@ func parseQtyUnit(qtyCell string) (qty, unit string, pack int, packed bool) {
 }
 
 // extractItems reads the line items from an already-open normalized PO reader.
-func extractItems(r *pdf.Reader) []Item {
+func extractItems(r *pdf.Reader) ([]Item, Info) {
+	var info Info
 	var items []Item
 	var lastDoc, lastDelivery string
 
@@ -165,6 +172,10 @@ func extractItems(r *pdf.Reader) []Item {
 		pageText := full.String()
 		if !rePOPage.MatchString(pageText) {
 			continue // not a PO content page
+		}
+		for _, m := range reSubtotal.FindAllStringSubmatch(pageText, -1) {
+			v, _ := strconv.ParseFloat(strings.ReplaceAll(m[1], ",", ""), 64)
+			info.PrintedGoods += v
 		}
 
 		doc := ""
@@ -202,7 +213,7 @@ func extractItems(r *pdf.Reader) []Item {
 			})
 		}
 	}
-	return items
+	return items, info
 }
 
 func parseNum(s string) (float64, bool) {

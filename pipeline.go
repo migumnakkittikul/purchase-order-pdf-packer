@@ -305,7 +305,7 @@ func convert(inputs []string, outPDF string, writeXlsx bool,
 			warnings = append(warnings, name+": could not open PDF; skipped.")
 			continue
 		}
-		items := extractItems(r)
+		items, info := extractItems(r)
 		codes := make([]string, len(items))
 		for i, it := range items {
 			codes[i] = it.Code
@@ -319,6 +319,28 @@ func convert(inputs []string, outPDF string, writeXlsx bool,
 			continue
 		}
 		allRows = append(allRows, items...)
+
+		// Safety: catch a silently incomplete extraction. Cross-check the sum of
+		// qty*price against the PO's own printed subtotal, and flag blank fields.
+		var computed float64
+		missing := 0
+		for _, it := range items {
+			q, okq := parseNum(it.Qty)
+			p, okp := parseNum(it.Price)
+			if okq && okp {
+				computed += q * p
+			}
+			if it.Code == "" || !okq || !okp {
+				missing++
+			}
+		}
+		if missing > 0 {
+			warnings = append(warnings, fmt.Sprintf("%s: %d line(s) missing code/qty/price - verify.", name, missing))
+		}
+		if info.PrintedGoods > 0 && math.Abs(computed-info.PrintedGoods) > 0.5 {
+			warnings = append(warnings, fmt.Sprintf("%s: extracted total %s != PO total %s - some items may be missing; verify.",
+				name, fmtNum(computed, 2), fmtNum(info.PrintedGoods, 2)))
+		}
 
 		counts := make([]int, len(items))
 		for i, it := range items {
