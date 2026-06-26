@@ -57,6 +57,20 @@ func pageDims(p pdf.Page) (w, h float64) {
 		mb.Index(3).Float64() - mb.Index(1).Float64()
 }
 
+// safePageText returns a page's interpreted text, recovering from the panics
+// ledongthuc throws on the SAP pages. Used as a fallback for ordinary PDFs
+// whose text isn't in the hex-mapped font decodeContent targets.
+func safePageText(p pdf.Page) (s string) {
+	defer func() { _ = recover() }()
+	var b strings.Builder
+	for _, t := range p.Content().Text {
+		if t.S != "�" {
+			b.WriteString(t.S)
+		}
+	}
+	return b.String()
+}
+
 // scanLabels maps each item code to the label page that carries it. Label pages
 // are the landscape pages; each shows exactly one product code from the PO.
 func scanLabels(r *pdf.Reader, itemCodes []string) map[string]labelLoc {
@@ -79,6 +93,14 @@ func scanLabels(r *pdf.Reader, itemCodes []string) map[string]labelLoc {
 		for code := range codeSet {
 			if strings.Contains(blob, code) {
 				hits = append(hits, code)
+			}
+		}
+		if len(hits) == 0 {
+			text := safePageText(p) // ordinary (non-SAP) PDFs
+			for code := range codeSet {
+				if strings.Contains(text, code) {
+					hits = append(hits, code)
+				}
 			}
 		}
 		if len(hits) != 1 {
