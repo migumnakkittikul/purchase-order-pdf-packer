@@ -112,17 +112,12 @@ func fmtMoney(price string) string {
 
 // ---- label crop + pack ---------------------------------------------------- //
 
-// labelTile is one cropped single-label PDF plus its source page size.
-type labelTile struct {
-	file string
-	w, h float64
-}
-
-// buildPOLabels produces ONE multi-page PDF of this PO's needed labels, in
-// order with repetition for copies, each cropped tight to its border box.
-// It uses just 3 pdfcpu calls regardless of label count (was 2*distinct + copies).
-func buildPOLabels(poDir, norm string, items []Item, loc map[string]labelLoc,
-	counts []int, conf *model.Configuration) (*labelTile, error) {
+// cropPOLabels crops this PO's distinct label pages to their border boxes (one
+// page each) and returns that file plus a map from product code to its 1-based
+// page within it. Ordering and repetition happen globally afterwards, so labels
+// can be grouped by branch across POs. Returns ("", nil, 0, nil) if no labels.
+func cropPOLabels(poDir, norm string, items []Item, loc map[string]labelLoc,
+	counts []int, conf *model.Configuration) (cropped string, codeToPage map[string]int, npages int, err error) {
 
 	// distinct label pages needed (first-seen order) + the label page size
 	var distinct []int
@@ -140,79 +135,74 @@ func buildPOLabels(poDir, norm string, items []Item, loc map[string]labelLoc,
 		}
 	}
 	if len(distinct) == 0 {
-		return nil, nil
+		return "", nil, 0, nil
 	}
 
-	// 1) collect all needed label pages in one pass
+	// collect the needed label pages in one pass
 	sel := make([]string, len(distinct))
 	for i, p := range distinct {
 		sel[i] = strconv.Itoa(p)
 	}
 	collected := filepath.Join(poDir, "collected.pdf")
 	if err := pdfapi.CollectFile(norm, collected, sel, conf); err != nil {
-		return nil, fmt.Errorf("collect labels: %w", err)
+		return "", nil, 0, fmt.Errorf("collect labels: %w", err)
 	}
 
-	// 2) crop every collected page to the label's border box (same box for all).
-	// Cropping a little above the bottom border drops the border line and the
-	// stray cut-line tick marks from the label below. Insets from the SAP template.
+	// crop every page to the label's border box (same box for all). Cropping a
+	// little above the bottom border drops the border line and the stray
+	// cut-line tick marks from the label below. Insets from the SAP template.
 	box, err := pdfapi.Box(fmt.Sprintf("[%g %g %g %g]", 11.0, h/2+3, w/2-21, h-25), types.POINTS)
 	if err != nil {
-		return nil, err
+		return "", nil, 0, err
 	}
-	cropped := filepath.Join(poDir, "cropped.pdf")
+	cropped = filepath.Join(poDir, "cropped.pdf")
 	if err := pdfapi.CropFile(collected, cropped, nil, box, conf); err != nil {
-		return nil, fmt.Errorf("crop labels: %w", err)
+		return "", nil, 0, fmt.Errorf("crop labels: %w", err)
 	}
 
-	// 3) expand to the final order with repetition (collect supports both)
-	idxOf := map[int]int{} // original page -> 1-based index within cropped.pdf
+	pageOf := map[int]int{} // original page -> 1-based page within cropped.pdf
 	for i, p := range distinct {
-		idxOf[p] = i + 1
+		pageOf[p] = i + 1
 	}
-	var ord []string
-	for i, it := range items {
-		l, ok := loc[it.Code]
-		if !ok || counts[i] <= 0 {
-			continue
-		}
-		for k := 0; k < counts[i]; k++ {
-			ord = append(ord, strconv.Itoa(idxOf[l.Page]))
+	codeToPage = map[string]int{}
+	for _, it := range items {
+		if l, ok := loc[it.Code]; ok {
+			if lp, ok2 := pageOf[l.Page]; ok2 {
+				codeToPage[it.Code] = lp
+			}
 		}
 	}
-	ordered := filepath.Join(poDir, "ordered.pdf")
-	if err := pdfapi.CollectFile(cropped, ordered, ord, conf); err != nil {
-		return nil, fmt.Errorf("order labels: %w", err)
-	}
-	return &labelTile{file: ordered, w: w, h: h}, nil
+	return cropped, codeToPage, len(distinct), nil
 }
 
-// packLabels merges ALL collected label tiles and packs them 4-up onto sheets.
-// Returns the sheet PDF path ("" if no tiles).
-func packLabels(tmpDir string, tiles []labelTile, conf *model.Configuration) (string, error) {
-	if len(tiles) == 0 {
-		return "", nil
-	}
-	files := make([]string, len(tiles))
-	for i, t := range tiles {
-		files[i] = t.file
-	}
-	merged := filepath.Join(tmpDir, "labels_merged.pdf")
-	if err := pdfapi.MergeCreateFile(files, merged, false, conf); err != nil {
-		return "", fmt.Errorf("merge labels: %w", err)
-	}
-	nup, err := pdfapi.PDFNUpConfig(4, "border:off, margin:0", conf)
+// stickerSide is the sticker page edge (10 cm) and stickerMargin the thin inner
+// margin, both in PDF points. For a sticker printer: one label per page.
+const (
+	mmToPt        = 72.0 / 25.4
+	stickerSide   = 100 * mmToPt // 10 cm
+	stickerMargin = 1.5 * mmToPt // thin breathing room
+)
+
+// stickerSheets lays out an already-ordered label file ONE PER PAGE on a
+// 10x10 cm sticker, each scaled to fit (aspect preserved) inside a thin margin.
+func stickerSheets(tmpDir, ordered string, conf *model.Configuration) (string, error) {
+	// 1x1 "grid" = one input label per output page; scaled to the sticker minus
+	// the margin, aspect preserved, centered, kept upright (no auto-rotate). The
+	// n passed here is overridden by the 1x1 grid; pdfcpu just wants a valid one.
+	nup, err := pdfapi.PDFNUpConfig(4, "border:off", conf)
 	if err != nil {
 		return "", err
 	}
-	// set the sheet size in points directly (avoid the description's unit parsing)
-	nup.PageDim = &types.Dim{Width: tiles[0].w, Height: tiles[0].h}
+	nup.Grid = &types.Dim{Width: 1, Height: 1}
+	nup.PageDim = &types.Dim{Width: stickerSide, Height: stickerSide}
 	nup.PageSize = ""
 	nup.UserDim = true
 	nup.InpUnit = types.POINTS
-	nup.Margin = 12 // labels print at ~original size; this just spaces them out
+	nup.Margin = stickerMargin
+	nup.Border = false
+	nup.Enforce = false // keep the label upright; don't rotate to "best fit"
 	sheets := filepath.Join(tmpDir, "label_sheets.pdf")
-	if err := pdfapi.NUpFile([]string{merged}, sheets, nil, nup, conf); err != nil {
+	if err := pdfapi.NUpFile([]string{ordered}, sheets, nil, nup, conf); err != nil {
 		return "", fmt.Errorf("nup labels: %w", err)
 	}
 	return sheets, nil
@@ -261,9 +251,11 @@ func writeXLSX(items []Item, path string) error {
 
 // ---- full conversion ------------------------------------------------------ //
 
-// convert builds one combined PDF (per PO: summary table + needed labels) from
-// the inputs, and writes an .xlsx copy. Returns (#PDF sections, warnings, err).
-// progress (if non-nil) is called as work proceeds: progress(done, total, msg).
+// convert builds one combined PDF from the inputs and writes an .xlsx copy. The
+// summary is one table per receiving branch (across all POs), each row tagged
+// with its PO number; the labels follow, grouped in the same branch order.
+// Returns (#PDF sections, warnings, err). progress (if non-nil) is called as
+// work proceeds: progress(done, total, msg).
 func convert(inputs []string, outPDF string, writeXlsx bool,
 	progress func(done, total int, msg string)) (int, []string, error) {
 
@@ -282,10 +274,16 @@ func convert(inputs []string, outPDF string, writeXlsx bool,
 	defer os.RemoveAll(tmpDir)
 	fam := loadFontFamily()
 
-	var tablePaths []string  // all PO summary pages (top of the output)
-	var allTiles []labelTile // all labels from all POs (combined at the bottom)
-	var allRows []Item
+	var allRows []Item  // every line item across all POs (grouped by branch later)
+	var allCounts []int // labels-needed per item, aligned with allRows
 	var warnings []string
+	// Per-PO cropped label files (distinct labels, one page each), and, aligned
+	// with allRows, which cropped file + page each item's label lives on. Labels
+	// are assembled in branch order at the end.
+	var cropFiles []string
+	var cropPages []int // page count of each cropFiles entry
+	var itemCrop []int  // index into cropFiles (or -1), aligned with allRows
+	var itemPage []int  // 1-based page within that cropped file, aligned with allRows
 
 	for idx, in := range inputs {
 		name := filepath.Base(in)
@@ -318,7 +316,11 @@ func convert(inputs []string, outPDF string, writeXlsx bool,
 			warnings = append(warnings, name+": no PO line items found (different layout or scanned PDF).")
 			continue
 		}
-		allRows = append(allRows, items...)
+		for i := range items { // fall back to the file name if the PO number is blank
+			if items[i].DocNo == "" {
+				items[i].DocNo = baseName(in)
+			}
+		}
 
 		// Safety: catch a silently incomplete extraction. Cross-check the sum of
 		// qty*price against the PO's own printed subtotal, and flag blank fields.
@@ -352,39 +354,110 @@ func convert(inputs []string, outPDF string, writeXlsx bool,
 			counts[i] = labelsNeeded(it)
 		}
 
-		docNo := items[0].DocNo
-		if docNo == "" {
-			docNo = baseName(in)
-		}
-		tps, err := renderTablePages(poDir, docNo, items, counts, fam)
-		if err != nil {
-			os.Remove(norm)
-			warnings = append(warnings, name+": table render failed: "+err.Error())
-			continue
-		}
-		tile, err := buildPOLabels(poDir, norm, items, loc, counts, conf)
+		allRows = append(allRows, items...)
+		allCounts = append(allCounts, counts...)
+
+		cropped, codeToPage, npages, err := cropPOLabels(poDir, norm, items, loc, counts, conf)
 		os.Remove(norm)
 		if err != nil {
 			warnings = append(warnings, name+": label build failed: "+err.Error())
 		}
-		tablePaths = append(tablePaths, tps...)
-		if tile != nil {
-			allTiles = append(allTiles, *tile)
+		cropIdx := -1
+		if cropped != "" {
+			cropIdx = len(cropFiles)
+			cropFiles = append(cropFiles, cropped)
+			cropPages = append(cropPages, npages)
+		}
+		for _, it := range items { // record each item's label location (aligned with allRows)
+			if cropIdx >= 0 {
+				if pg, ok := codeToPage[it.Code]; ok {
+					itemCrop = append(itemCrop, cropIdx)
+					itemPage = append(itemPage, pg)
+					continue
+				}
+			}
+			itemCrop = append(itemCrop, -1)
+			itemPage = append(itemPage, 0)
 		}
 	}
 
-	if len(tablePaths) == 0 {
+	if len(allRows) == 0 {
 		return 0, warnings, fmt.Errorf("nothing produced - no readable PO pages in the input")
 	}
 	prog(len(inputs), "Combining labels and saving...")
-	// all summaries first, then all labels packed together at the bottom
-	sections := append([]string{}, tablePaths...)
-	sheets, err := packLabels(tmpDir, allTiles, conf)
-	if err != nil {
-		warnings = append(warnings, "label packing failed: "+err.Error())
-	} else if sheets != "" {
-		sections = append(sections, sheets)
+
+	// One summary table per branch (delivery), in first-seen order, with a PO
+	// column on each row.
+	var branchOrder []string
+	byBranch := map[string][]int{}
+	for i, it := range allRows {
+		if _, ok := byBranch[it.Delivery]; !ok {
+			branchOrder = append(branchOrder, it.Delivery)
+		}
+		byBranch[it.Delivery] = append(byBranch[it.Delivery], i)
 	}
+	var tablePaths []string
+	for gi, b := range branchOrder {
+		idxs := byBranch[b]
+		bItems := make([]Item, len(idxs))
+		bCounts := make([]int, len(idxs))
+		for j, i := range idxs {
+			bItems[j], bCounts[j] = allRows[i], allCounts[i]
+		}
+		title := b
+		if title == "" {
+			title = "(ไม่ระบุสาขา)"
+		}
+		tps, err := renderTablePages(tmpDir, gi, title, bItems, bCounts, fam)
+		if err != nil {
+			warnings = append(warnings, "table render failed for branch "+b+": "+err.Error())
+			continue
+		}
+		tablePaths = append(tablePaths, tps...)
+	}
+	if len(tablePaths) == 0 {
+		return 0, warnings, fmt.Errorf("nothing produced - table rendering failed")
+	}
+
+	// all summaries first, then all labels at the bottom - ordered BY BRANCH to
+	// match the tables (each branch's stickers together, in the same row order).
+	sections := append([]string{}, tablePaths...)
+	if len(cropFiles) > 0 {
+		bigCropped := filepath.Join(tmpDir, "labels_all.pdf")
+		if err := pdfapi.MergeCreateFile(cropFiles, bigCropped, false, conf); err != nil {
+			warnings = append(warnings, "label merge failed: "+err.Error())
+		} else {
+			off := make([]int, len(cropFiles)) // page offset of each file within bigCropped
+			run := 0
+			for k := range cropFiles {
+				off[k] = run
+				run += cropPages[k]
+			}
+			var sel []string // global pages, branch order, with copies
+			for _, b := range branchOrder {
+				for _, i := range byBranch[b] {
+					if itemCrop[i] < 0 || allCounts[i] <= 0 {
+						continue
+					}
+					g := off[itemCrop[i]] + itemPage[i]
+					for k := 0; k < allCounts[i]; k++ {
+						sel = append(sel, strconv.Itoa(g))
+					}
+				}
+			}
+			if len(sel) > 0 {
+				ordered := filepath.Join(tmpDir, "labels_ordered.pdf")
+				if err := pdfapi.CollectFile(bigCropped, ordered, sel, conf); err != nil {
+					warnings = append(warnings, "label ordering failed: "+err.Error())
+				} else if sheets, err := stickerSheets(tmpDir, ordered, conf); err != nil {
+					warnings = append(warnings, "label sheets failed: "+err.Error())
+				} else if sheets != "" {
+					sections = append(sections, sheets)
+				}
+			}
+		}
+	}
+
 	if err := pdfapi.MergeCreateFile(sections, outPDF, false, conf); err != nil {
 		return 0, warnings, fmt.Errorf("final merge: %w", err)
 	}
