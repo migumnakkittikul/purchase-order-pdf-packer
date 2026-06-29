@@ -154,9 +154,9 @@ func buildPOLabels(poDir, norm string, items []Item, loc map[string]labelLoc,
 	}
 
 	// 2) crop every collected page to the label's border box (same box for all).
-	// Tight inside the top-left quadrant (which has built-in whitespace) so it
-	// prints at original size with even margins. Insets from the SAP template.
-	box, err := pdfapi.Box(fmt.Sprintf("[%g %g %g %g]", 11.0, h/2-3, w/2-21, h-25), types.POINTS)
+	// Cropping a little above the bottom border drops the border line and the
+	// stray cut-line tick marks from the label below. Insets from the SAP template.
+	box, err := pdfapi.Box(fmt.Sprintf("[%g %g %g %g]", 11.0, h/2+3, w/2-21, h-25), types.POINTS)
 	if err != nil {
 		return nil, err
 	}
