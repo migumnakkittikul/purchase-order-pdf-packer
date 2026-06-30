@@ -38,9 +38,9 @@ type colSpec struct {
 func summaryColumns() []colSpec {
 	return []colSpec{
 		{"#", 26, canvas.Center, func(it Item, i, c int) string { return fmt.Sprintf("%d", i+1) }},
+		{"เลขที่ PO", 92, canvas.Left, func(it Item, i, c int) string { return it.DocNo }},
 		{"รหัสสินค้า", 66, canvas.Left, func(it Item, i, c int) string { return it.Code }},
 		{"ชื่อสินค้า", 316, canvas.Left, func(it Item, i, c int) string { return it.Name }},
-		{"ส่งไปที่", 92, canvas.Left, func(it Item, i, c int) string { return it.Delivery }},
 		{"จำนวน", 48, canvas.Right, func(it Item, i, c int) string { return fmtQty(it) }},
 		{"หน่วย", 46, canvas.Center, func(it Item, i, c int) string { return it.Unit }},
 		{"รวม(ชิ้น)", 58, canvas.Right, func(it Item, i, c int) string { return fmtTotal(it) }},
@@ -61,9 +61,10 @@ func loadFontFamily() *canvas.FontFamily {
 	return fam
 }
 
-// renderTablePages renders the order summary; returns one PDF path per page.
+// renderTablePages renders one branch's summary; returns one PDF path per page.
+// title is the branch name; groupIdx keeps the temp filenames unique.
 // counts[i] = labels for item i (-1 means no label page found).
-func renderTablePages(tmpDir, docNo string, items []Item, counts []int, fam *canvas.FontFamily) ([]string, error) {
+func renderTablePages(tmpDir string, groupIdx int, title string, items []Item, counts []int, fam *canvas.FontFamily) ([]string, error) {
 	cols := summaryColumns()
 	totalW := 0.0
 	for _, c := range cols {
@@ -92,8 +93,8 @@ func renderTablePages(tmpDir, docNo string, items []Item, counts []int, fam *can
 		if hi > len(items) {
 			hi = len(items)
 		}
-		path := filepath.Join(tmpDir, fmt.Sprintf("table_%s_%d.pdf", docNo, pg))
-		if err := renderOnePage(path, docNo, items[lo:hi], counts[lo:hi], lo,
+		path := filepath.Join(tmpDir, fmt.Sprintf("table_%d_%d.pdf", groupIdx, pg))
+		if err := renderOnePage(path, title, items[lo:hi], counts[lo:hi], lo,
 			cols, totalW, top, len(items), totalLabels, pg+1, nPages, fam); err != nil {
 			return nil, err
 		}
@@ -102,7 +103,7 @@ func renderTablePages(tmpDir, docNo string, items []Item, counts []int, fam *can
 	return paths, nil
 }
 
-func renderOnePage(path, docNo string, items []Item, counts []int, idxOff int,
+func renderOnePage(path, title string, items []Item, counts []int, idxOff int,
 	cols []colSpec, totalW, top float64, totalItems, totalLabels, pgNo, pgTot int,
 	fam *canvas.FontFamily) error {
 
@@ -137,7 +138,7 @@ func renderOnePage(path, docNo string, items []Item, counts []int, idxOff int,
 
 	// title + subtitle (baseline-anchored; kept clear of the top edge)
 	ctx.DrawText(left*S, (pageH-50)*S, canvas.NewTextLine(faceTitle,
-		fmt.Sprintf("ใบสั่งซื้อ  เลขที่ %s", docNo), canvas.Left))
+		fmt.Sprintf("สาขา: %s", title), canvas.Left))
 	ctx.DrawText(left*S, (pageH-70)*S, canvas.NewTextLine(faceSub,
 		fmt.Sprintf("%d รายการ   ป้ายที่ต้องพิมพ์ %d ใบ   หน้า %d/%d",
 			totalItems, totalLabels, pgNo, pgTot), canvas.Left))
